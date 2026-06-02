@@ -23,16 +23,19 @@ def compute_bleu(
     Returns:
         {"BLEU-1": ..., "BLEU-4": ...}, percent-scale [0, 100].
     """
-    import sacrebleu  # type: ignore
+    from sacrebleu.metrics import BLEU  # type: ignore
 
     assert len(predictions) == len(references)
     # sacrebleu expects references as list-of-list-of-references.
     refs = [references]
 
-    b1 = sacrebleu.corpus_bleu(predictions, refs, smooth_method="exp",
-                               max_ngram_order=1).score
-    b4 = sacrebleu.corpus_bleu(predictions, refs, smooth_method="exp",
-                               max_ngram_order=4).score
+    # sacrebleu 2.x moved max_ngram_order off corpus_bleu() and onto the BLEU
+    # metric class. effective_order=True keeps short explanations from
+    # collapsing BLEU-4 to 0 when they have <4 tokens.
+    b1 = BLEU(max_ngram_order=1, effective_order=True).corpus_score(
+        predictions, refs).score
+    b4 = BLEU(max_ngram_order=4, effective_order=True).corpus_score(
+        predictions, refs).score
     return {"BLEU-1": float(b1), "BLEU-4": float(b4)}
 
 
@@ -100,3 +103,38 @@ def compute_bertscore(
         verbose=False,
     )
     return {"BERTScore-F1": float(f1.mean().item())}
+
+
+# ---------------------------------------------------------------------------
+# 4. Feature Matching Ratio (the field's standard explainability metric)
+# ---------------------------------------------------------------------------
+def compute_fmr(
+    predictions: List[str],
+    aspect_vocabulary: List[str],
+) -> Dict[str, float]:
+    """Feature Matching Ratio — fraction of explanations that surface at
+    least one aspect from the controlled vocabulary.
+
+    FMR = #( explanations containing >=1 vocab term ) / #explanations
+
+    A higher FMR means the language model actually *uses* the vocabulary the
+    aspect gate selected rather than ignoring it. Standard in PETER / PEPLER /
+    XRec papers as the lightest-weight explainability check.
+
+    Args:
+        predictions: generated explanations.
+        aspect_vocabulary: list of aspect strings (typically the 50-term vocab).
+
+    Returns:
+        {"FMR": float in [0, 1]}.
+    """
+    if not predictions:
+        return {"FMR": 0.0}
+    # Lowercase the vocab once for case-insensitive substring matching.
+    vocab_lc = [a.lower() for a in aspect_vocabulary if a]
+    hits = 0
+    for pred in predictions:
+        p_lc = (pred or "").lower()
+        if any(v in p_lc for v in vocab_lc):
+            hits += 1
+    return {"FMR": hits / len(predictions)}

@@ -27,12 +27,26 @@ class ConstrainedScorer(nn.Module):
         aspect_dim: int = 50,
         hidden_dim: int = 256,
         dropout: float = 0.1,
+        ui_bottleneck_dim: int = 16,
     ):
         super().__init__()
         self.user_item_dim = int(user_item_dim)
         self.aspect_dim = int(aspect_dim)
         self.hidden_dim = int(hidden_dim)
-        in_dim = self.user_item_dim + self.aspect_dim
+        self.ui_bottleneck_dim = int(ui_bottleneck_dim)
+
+        # Bottleneck the user/item path: project the full [u || i] (e.g. 128-d)
+        # down to a small dim before it reaches the scorer. This stops the
+        # scorer from ranking off u/i alone and bypassing the aspect channel
+        # (the "u/i leak" that made test-time comprehensiveness collapse). The
+        # information bottleneck the paper claims is now actually enforced:
+        # most of the score must flow through the selected aspects.
+        self.ui_proj = nn.Sequential(
+            nn.Linear(self.user_item_dim, self.ui_bottleneck_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        in_dim = self.ui_bottleneck_dim + self.aspect_dim
         h2 = self.hidden_dim // 2
 
         self.net = nn.Sequential(
@@ -46,10 +60,11 @@ class ConstrainedScorer(nn.Module):
             nn.Sigmoid(),
         )
 
-        for m in self.net:
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.zeros_(m.bias)
+        for module in (self.ui_proj, self.net):
+            for m in module:
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight)
+                    nn.init.zeros_(m.bias)
 
     # ------------------------------------------------------------------
     def _score(
@@ -58,7 +73,8 @@ class ConstrainedScorer(nn.Module):
         item_emb: torch.Tensor,
         aspects: torch.Tensor,
     ) -> torch.Tensor:
-        x = torch.cat([user_emb, item_emb, aspects], dim=-1)
+        ui = self.ui_proj(torch.cat([user_emb, item_emb], dim=-1))
+        x = torch.cat([ui, aspects], dim=-1)
         return self.net(x)
 
     def forward(

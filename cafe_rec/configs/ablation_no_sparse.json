@@ -1,0 +1,5 @@
+{
+  "lambda_faith": 0.5,
+  "lambda_sparse": 0.0,
+  "save_dir": "./checkpoints/ablation_no_sparse"
+}

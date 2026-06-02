@@ -49,18 +49,30 @@ def load_model_from_checkpoint(
     vocab: Dict[str, Any],
 ) -> CaFeRec:
     """Reconstruct CaFeRec from a training checkpoint and set eval mode."""
+    ckpt = torch.load(checkpoint_path, map_location=config.device)
+
+    # Recover model-shape-relevant fields from the checkpoint so we rebuild with
+    # the SAME backbone that was trained (e.g. flan-t5-small vs base). Without
+    # this, a small-backbone checkpoint fails load_state_dict against the
+    # default base-sized model.
+    saved = ckpt.get("config", {})
+    for k in ("flan_model_name", "embedding_dim", "num_aspects", "adapter_dim",
+              "num_gcn_layers", "max_explanation_length"):
+        if k in saved and hasattr(config, k):
+            config = replace(config, **{k: saved[k]})
+
     num_users = int(train_df["user_idx"].max()) + 1
     num_items = int(train_df["item_idx"].max()) + 1
     model = CaFeRec(config, num_users, num_items, vocab["aspects"])
     model.to(torch.device(config.device))
     model.build_graph(train_df)
 
-    ckpt = torch.load(checkpoint_path, map_location=config.device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     print(f"[ckpt] loaded {checkpoint_path} "
           f"(epoch {ckpt.get('epoch', '?')}, "
-          f"val={ckpt.get('val_score', float('nan')):.4f})")
+          f"val={ckpt.get('val_score', float('nan')):.4f}, "
+          f"backbone={config.flan_model_name})")
     return model
 
 
@@ -226,6 +238,15 @@ def evaluate_model(
         )
     except Exception as e:
         print(f"[text] BERTScore skipped: {e}")
+    try:
+        from evaluation.text_metrics import compute_fmr
+        # Pull the aspect vocabulary off the model so we don't have to plumb it
+        # through evaluate_model's signature.
+        vocab = getattr(model, "aspect_vocabulary", None)
+        if vocab:
+            text_metrics.update(compute_fmr(preds, list(vocab)))
+    except Exception as e:
+        print(f"[text] FMR skipped: {e}")
 
     return {
         **{k: float(v) for k, v in rec.items()},
@@ -239,12 +260,14 @@ def evaluate_model(
 # 3. Formatted comparison table
 # ---------------------------------------------------------------------------
 _TABLE_COLUMNS = [
-    ("Recall@10", "Recall@10"),
-    ("NDCG@10", "NDCG@10"),
-    ("BLEU-4", "BLEU-4"),
-    ("Comp.", "comprehensiveness"),
-    ("Suff.", "sufficiency"),
-    ("CF%", "CF@10"),
+    ("Recall@10",   "Recall@10"),
+    ("NDCG@10",     "NDCG@10"),
+    ("BLEU-4x100",  "BLEU-4"),         # sacrebleu .score is 0-100; header makes scale explicit
+    ("BERTScore",   "BERTScore-F1"),   # semantic similarity, 0-1 (RoBERTa-large)
+    ("FMR",         "FMR"),            # fraction of explanations containing >=1 aspect from vocab
+    ("Comp.",       "comprehensiveness"),
+    ("Suff.",       "sufficiency"),
+    ("CF%",         "CF@10"),
 ]
 
 
@@ -434,12 +457,140 @@ def load_baseline_results(
 
 
 # ---------------------------------------------------------------------------
+# Disk helpers for summary mode
+# ---------------------------------------------------------------------------
+_OURS_KEY = "CaFE-Rec(ours)"
+_SIG_METRICS: Tuple[str, ...] = ("Recall@10", "CF@10")
+
+
+def _ours_json_default(out_dir: str, dataset_name: str) -> str:
+    return os.path.join(out_dir, f"cafe_rec_{dataset_name}.json")
+
+
+def _ours_npz_default(out_dir: str) -> str:
+    # Keep the historical filename so existing runs still pick it up.
+    return os.path.join(out_dir, "cafe_rec_per_example.npz")
+
+
+def _save_ours_artifacts(
+    out_dir: str, dataset_name: str,
+    aggregate: Dict[str, Any],
+    per_example: Optional[Dict[str, np.ndarray]] = None,
+) -> Tuple[str, Optional[str]]:
+    """Persist our results in the same {dataset: {...}} shape as the baselines,
+    so summary-mode can pick them up next time without re-running the model."""
+    os.makedirs(out_dir, exist_ok=True)
+    json_path = _ours_json_default(out_dir, dataset_name)
+    payload = {dataset_name: {
+        **{k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
+           for k, v in aggregate.items()},
+        "_meta": {"name": _OURS_KEY, "dataset": dataset_name},
+    }}
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    npz_path = None
+    if per_example:
+        npz_path = _ours_npz_default(out_dir)
+        np.savez(npz_path, **{k: np.asarray(v) for k, v in per_example.items()})
+    return json_path, npz_path
+
+
+def _load_ours_from_disk(
+    args: argparse.Namespace, dataset_name: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, np.ndarray]]]:
+    """Load our aggregate JSON + per-example NPZ if present. Either may be
+    missing -- caller decides whether to render N/A."""
+    json_path = args.ours_json or _ours_json_default(args.out_dir, dataset_name)
+    npz_path = args.ours_per_example or _ours_npz_default(args.out_dir)
+
+    aggregate: Optional[Dict[str, Any]] = None
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        aggregate = data.get(dataset_name, data)
+        # Strip our own bookkeeping before display.
+        aggregate = {k: v for k, v in aggregate.items() if not k.startswith("_")}
+        print(f"[summary] loaded ours aggregate <- {json_path}")
+    else:
+        print(f"[summary] no ours aggregate at {json_path} (will print N/A)")
+
+    per_example: Optional[Dict[str, np.ndarray]] = None
+    if os.path.exists(npz_path):
+        z = np.load(npz_path)
+        per_example = {k: z[k] for k in z.files}
+        print(f"[summary] loaded ours per-example <- {npz_path}")
+
+    return aggregate, per_example
+
+
+def _load_baseline_per_example(
+    baselines_path: str, baselines: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, np.ndarray]]:
+    out: Dict[str, Dict[str, np.ndarray]] = {}
+    if not os.path.isdir(baselines_path):
+        return out
+    for name in baselines:
+        npz = os.path.join(baselines_path, f"{name}_per_example.npz")
+        if os.path.exists(npz):
+            z = np.load(npz)
+            out[name] = {k: z[k] for k in z.files}
+    return out
+
+
+def _pick_strongest_baseline(
+    baselines: Dict[str, Dict[str, Any]],
+    baseline_per: Dict[str, Dict[str, np.ndarray]],
+    explicit: Optional[str] = None,
+) -> Optional[str]:
+    """The "strongest" Wilcoxon comparator. Prefer the user's explicit pick;
+    otherwise the present baseline with the highest Recall@10 *that also has*
+    a per-example NPZ on disk (you can't run paired tests without one)."""
+    if explicit and explicit in baselines:
+        return explicit
+    eligible = [n for n in baselines if n in baseline_per]
+    if not eligible:
+        return None
+    return max(
+        eligible,
+        key=lambda n: float(baselines[n].get("Recall@10") or float("-inf")),
+    )
+
+
+def _persist_table(
+    out_dir: str, dataset_name: str,
+    all_results: Dict[str, Dict[str, Any]],
+    significance: Dict[str, bool],
+    table_str: str,
+    extras: Optional[Dict[str, Any]] = None,
+) -> str:
+    out = {
+        "dataset": dataset_name,
+        "results": all_results,
+        "significance": {k: bool(v) for k, v in significance.items()},
+        "table": table_str,
+        **(extras or {}),
+    }
+    path = os.path.join(out_dir, "results_table.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2, ensure_ascii=False, default=str)
+    txt = os.path.join(out_dir, "results_table.txt")
+    with open(txt, "w", encoding="utf-8") as f:
+        f.write(table_str + "\n")
+    print(f"[save] {path}")
+    print(f"[save] {txt}")
+    return path
+
+
+# ---------------------------------------------------------------------------
 # 5. CLI main
 # ---------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate CaFE-Rec.")
-    p.add_argument("--checkpoint", required=True,
-                   help="Path to a .pt checkpoint from train.py.")
+    p.add_argument("--checkpoint", default=None,
+                   help="Path to a .pt checkpoint from train.py. "
+                        "Omit (or pass --summary_only) to skip model loading "
+                        "and just print the paper table from existing JSON/NPZ.")
     p.add_argument("--dataset", default="amazon_movies")
     p.add_argument("--processed_dir", default=None)
     p.add_argument("--baselines", default="./results/baselines",
@@ -448,18 +599,28 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--text_limit", type=int, default=500,
                    help="Max test rows to generate explanations for.")
     p.add_argument("--cf_k", type=int, default=10)
+    p.add_argument("--summary_only", action="store_true",
+                   help="Skip checkpoint eval; print the table from disk only. "
+                        "Implicit if --checkpoint is omitted.")
+    p.add_argument("--ours_json", default=None,
+                   help="JSON of our aggregate metrics (summary mode). "
+                        "Defaults to <out_dir>/cafe_rec_<dataset>.json.")
+    p.add_argument("--ours_per_example", default=None,
+                   help="NPZ of our per-example metrics (summary mode). "
+                        "Defaults to <out_dir>/cafe_rec_per_example.npz.")
+    p.add_argument("--strongest", default=None,
+                   help="Baseline name to use as Wilcoxon comparator. "
+                        "Default: highest-Recall@10 baseline present.")
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    config = CONFIG
-    if args.processed_dir:
-        config = replace(config, processed_dir=args.processed_dir)
-    config = replace(config, dataset_name=args.dataset)
-    os.makedirs(args.out_dir, exist_ok=True)
-
-    # Load data
+def _run_checkpoint_eval(
+    args: argparse.Namespace, config: Config,
+) -> Tuple[Dict[str, Any], Dict[str, np.ndarray], List[Dict[str, Any]],
+           pd.DataFrame, pd.DataFrame]:
+    """Full evaluation pass: load splits, score the checkpoint, return
+    aggregate metrics, per-example arrays, qualitative examples, and the
+    train/test frames so the caller can pass them downstream."""
     d = config.processed_dir
     with open(os.path.join(d, "train.pkl"), "rb") as f:
         train_df = pickle.load(f)
@@ -470,25 +631,21 @@ def main() -> None:
         vocab = json.load(f)
     num_items = int(train_df["item_idx"].max()) + 1
 
-    # Build eval dataset from test (exclude train positives from negatives)
     test_ds = EvaluationDataset(
         test_df, train_df, num_items=num_items,
         num_negatives=config.num_neg_samples, seed=42,
     )
 
-    # Model
     model = load_model_from_checkpoint(
         args.checkpoint, config, train_df, vocab
     )
 
-    # Our results
     print("\n[eval] running full evaluation on test set...")
     ours = evaluate_model(
         model, test_ds, test_df, config,
         text_sample_limit=args.text_limit, cf_k=args.cf_k,
     )
 
-    # Per-example scores for significance testing
     ours_per_rec = per_example_rec_metrics(
         model, test_ds, config, k_list=[10]
     )
@@ -497,52 +654,86 @@ def main() -> None:
         "Recall@10": ours_per_rec["Recall@10"],
         "CF@10": ours_cf,
     }
-    np.savez(
-        os.path.join(args.out_dir, "cafe_rec_per_example.npz"),
-        **{k: v for k, v in ours_per.items()},
-    )
 
-    # Baselines (aggregate + optional per-example)
-    baselines = load_baseline_results(args.baselines, config.dataset_name)
-
-    baseline_per: Dict[str, Dict[str, np.ndarray]] = {}
-    if os.path.isdir(args.baselines):
-        for name in baselines:
-            npz = os.path.join(args.baselines, f"{name}_per_example.npz")
-            if os.path.exists(npz):
-                z = np.load(npz)
-                baseline_per[name] = {k: z[k] for k in z.files}
-
-    significance = run_significance_tests(
-        ours_per, baseline_per, metrics=("Recall@10", "CF@10"),
-        strongest="XRec",
-    ) if baseline_per else {m: False for m in ("Recall@10", "CF@10")}
-
-    # Compose the table
-    all_results = {**baselines, "CaFE-Rec(ours)": ours}
-    table_str = format_results_table(
-        all_results, ours_key="CaFE-Rec(ours)", significance=significance,
-    )
-
-    # Qualitative examples
     examples = generate_example_explanations(
         model, test_df, train_df, config, n_examples=5
     )
 
-    # Save everything
-    out = {
-        "dataset": config.dataset_name,
-        "checkpoint": args.checkpoint,
-        "config": config.as_dict(),
-        "results": all_results,
-        "significance": {k: bool(v) for k, v in significance.items()},
-        "examples": examples,
-        "table": table_str,
+    # Persist for later summary-only runs.
+    _save_ours_artifacts(args.out_dir, config.dataset_name, ours, ours_per)
+    return ours, ours_per, examples, train_df, test_df
+
+
+def main() -> None:
+    args = parse_args()
+    config = CONFIG
+    if args.processed_dir:
+        config = replace(config, processed_dir=args.processed_dir)
+    config = replace(config, dataset_name=args.dataset)
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    summary_mode = args.summary_only or not args.checkpoint
+
+    # ----- Our results -----
+    ours: Optional[Dict[str, Any]] = None
+    ours_per: Optional[Dict[str, np.ndarray]] = None
+    examples: List[Dict[str, Any]] = []
+    if summary_mode:
+        print("[mode] summary-only (no checkpoint)")
+        ours, ours_per = _load_ours_from_disk(args, config.dataset_name)
+    else:
+        print(f"[mode] full eval on checkpoint {args.checkpoint}")
+        ours, ours_per, examples, _train_df, _test_df = _run_checkpoint_eval(
+            args, config
+        )
+
+    # ----- Baselines (aggregate + optional per-example) -----
+    baselines = load_baseline_results(args.baselines, config.dataset_name)
+    baseline_per = _load_baseline_per_example(args.baselines, baselines)
+    if baselines:
+        print(f"[summary] loaded {len(baselines)} baseline(s): "
+              f"{', '.join(sorted(baselines))}")
+        if baseline_per:
+            print(f"[summary] per-example NPZ available for: "
+                  f"{', '.join(sorted(baseline_per))}")
+    else:
+        print(f"[summary] no baselines found under {args.baselines}")
+
+    # ----- Significance vs. strongest -----
+    strongest = _pick_strongest_baseline(
+        baselines, baseline_per, explicit=args.strongest,
+    )
+    significance: Dict[str, bool] = {m: False for m in _SIG_METRICS}
+    if ours_per and strongest and strongest in baseline_per:
+        print(f"[summary] Wilcoxon vs strongest baseline: {strongest}")
+        significance = run_significance_tests(
+            ours_per, baseline_per, metrics=_SIG_METRICS, strongest=strongest,
+        )
+    else:
+        print("[summary] skipping Wilcoxon (need our per-example NPZ "
+              "+ a per-example NPZ from at least one baseline)")
+
+    # ----- Compose the table -----
+    all_results: Dict[str, Dict[str, Any]] = {**baselines}
+    if ours is not None:
+        all_results[_OURS_KEY] = ours
+    table_str = format_results_table(
+        all_results, ours_key=_OURS_KEY, significance=significance,
+    )
+
+    # ----- Save -----
+    extras: Dict[str, Any] = {
+        "mode": "summary" if summary_mode else "full_eval",
+        "strongest_baseline": strongest,
     }
-    out_path = os.path.join(args.out_dir, "results_table.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2, ensure_ascii=False, default=str)
-    print(f"\n[save] {out_path}")
+    if not summary_mode:
+        extras.update({
+            "checkpoint": args.checkpoint,
+            "config": config.as_dict(),
+            "examples": examples,
+        })
+    _persist_table(args.out_dir, config.dataset_name,
+                   all_results, significance, table_str, extras=extras)
 
 
 if __name__ == "__main__":

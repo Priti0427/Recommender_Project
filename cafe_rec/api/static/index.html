@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CaFE-Rec — Counterfactually Faithful Explanations</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .pill { display:inline-flex; align-items:center; padding:.25rem .6rem; border-radius:9999px;
+            font-size:.75rem; font-weight:500; }
+    .grad { background: linear-gradient(135deg,#0ea5e9,#6366f1); }
+    .card { transition: transform .15s ease, box-shadow .15s ease; }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 10px 25px -5px rgba(0,0,0,.1); }
+    .selected-card { outline: 2px solid #6366f1; outline-offset: 2px; }
+    .skel { background: linear-gradient(90deg,#e5e7eb 25%,#f3f4f6 50%,#e5e7eb 75%);
+            background-size: 200% 100%; animation: skel 1.2s infinite linear; }
+    @keyframes skel { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+  <header class="grad text-white">
+    <div class="max-w-6xl mx-auto px-6 py-8">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight">CaFE-Rec</h1>
+          <p class="text-sky-100 text-sm mt-1">
+            Counterfactually Faithful Explanation Recommender · live demo
+          </p>
+        </div>
+        <div id="health-pill" class="pill bg-white/20 text-white">checking…</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-6 py-8 space-y-6">
+
+    <!-- Input -->
+    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <label class="block text-sm font-medium text-slate-700 mb-2">User ID</label>
+      <div class="flex gap-2 mb-2">
+        <select id="user-picker"
+                class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm
+                       focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono bg-white">
+          <option value="">Loading 100 sample users…</option>
+        </select>
+        <button id="shuffle-btn" type="button"
+                class="rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 text-sm"
+                title="Reshuffle the sample">↻</button>
+      </div>
+      <div class="flex gap-2">
+        <input id="user-id" type="text" placeholder="...or paste any user id / integer index"
+               class="flex-1 rounded-lg border border-slate-300 px-3 py-2
+                      focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono text-sm" />
+        <input id="top-k" type="number" min="1" max="50" value="10"
+               class="w-20 rounded-lg border border-slate-300 px-3 py-2 text-sm
+                      focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        <button id="recommend-btn"
+                class="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2
+                       text-sm font-medium shadow-sm">
+          Recommend
+        </button>
+      </div>
+      <p class="text-xs text-slate-500 mt-2">
+        Pick from the dropdown (100 trained users, ordered by interaction count)
+        or paste any raw ASIN-style id / integer index. Click ↻ to reshuffle.
+      </p>
+    </section>
+
+    <!-- Recommendations grid -->
+    <section id="rec-section" class="hidden">
+      <h2 class="text-lg font-semibold mb-3">Top recommendations</h2>
+      <div id="rec-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+    </section>
+
+    <!-- Detail panel: explain + counterfactual side-by-side -->
+    <section id="detail-section" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- Explain -->
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-semibold">Explanation</h3>
+          <span id="explain-score" class="pill bg-indigo-50 text-indigo-700"></span>
+        </div>
+        <div id="explain-body" class="space-y-4">
+          <div class="skel h-4 w-full rounded"></div>
+          <div class="skel h-4 w-3/4 rounded"></div>
+        </div>
+      </div>
+
+      <!-- Counterfactual -->
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-semibold">Counterfactual fidelity</h3>
+          <span id="cf-flag" class="pill"></span>
+        </div>
+        <div id="cf-body" class="space-y-4">
+          <div class="skel h-4 w-full rounded"></div>
+          <div class="skel h-4 w-2/3 rounded"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Empty state -->
+    <section id="empty-state" class="text-center py-12 text-slate-500">
+      <p>Enter a user id above to see recommendations.</p>
+    </section>
+
+    <!-- Error -->
+    <div id="error-box" class="hidden bg-rose-50 border border-rose-200 text-rose-800
+                               rounded-lg p-4 text-sm"></div>
+
+  </main>
+
+  <footer class="max-w-6xl mx-auto px-6 py-8 text-xs text-slate-500">
+    <a href="/docs" class="underline hover:text-slate-700">OpenAPI / Swagger</a> ·
+    <a href="https://github.com/" class="underline hover:text-slate-700">repo</a>
+  </footer>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const api = (path, opts={}) => fetch(path, { headers: {'content-type':'application/json'}, ...opts })
+    .then(async r => {
+      if (!r.ok) throw new Error((await r.json().catch(()=>({detail:r.statusText}))).detail);
+      return r.json();
+    });
+
+  let currentUser = null;
+  let selectedItem = null;
+
+  function showError(msg) {
+    const el = $('error-box'); el.textContent = msg; el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 6000);
+  }
+
+  // ----- health -----
+  api('/health').then(h => {
+    $('health-pill').textContent = `${h.device} · ${h.num_users.toLocaleString()} users · ${h.num_items.toLocaleString()} items`;
+  }).catch(e => {
+    $('health-pill').textContent = 'offline';
+    $('health-pill').classList.add('bg-rose-200','text-rose-900');
+  });
+
+  // ----- sample users dropdown -----
+  async function loadSampleUsers(seed = 0) {
+    const picker = $('user-picker');
+    picker.innerHTML = '<option value="">Loading…</option>';
+    try {
+      const r = await api(`/users/sample?n=100&seed=${seed}`);
+      if (!r.users || !r.users.length) {
+        picker.innerHTML = '<option value="">(no sample available)</option>';
+        return;
+      }
+      const opts = ['<option value="">— pick a trained user —</option>'];
+      for (const u of r.users) {
+        const short = (u.user_id && u.user_id.length > 14)
+                       ? u.user_id.slice(0, 12) + '…' : (u.user_id || u.user_idx);
+        opts.push(`<option value="${u.user_id || u.user_idx}">`
+          + `idx ${u.user_idx}  ·  ${short}  ·  ${u.n_interactions} interactions</option>`);
+      }
+      picker.innerHTML = opts.join('');
+    } catch (e) {
+      picker.innerHTML = '<option value="">(load failed)</option>';
+      showError(`could not load sample users: ${e.message}`);
+    }
+  }
+  loadSampleUsers(0);
+  $('shuffle-btn').addEventListener('click', () => loadSampleUsers(Date.now() % 100000));
+  $('user-picker').addEventListener('change', () => {
+    const v = $('user-picker').value;
+    if (v) { $('user-id').value = v; }
+  });
+
+  // ----- recommend -----
+  $('recommend-btn').addEventListener('click', async () => {
+    const userId = $('user-id').value.trim();
+    if (!userId) { showError('enter a user id'); return; }
+    const k = $('top-k').value || 10;
+    currentUser = userId;
+    $('empty-state').classList.add('hidden');
+    $('detail-section').classList.add('hidden');
+    $('rec-section').classList.remove('hidden');
+    $('rec-grid').innerHTML = Array.from({length: k}).map(() =>
+      `<div class="skel h-24 rounded-xl"></div>`).join('');
+
+    try {
+      const res = await api(`/users/${encodeURIComponent(userId)}/recommend?k=${k}`);
+      renderRecs(res.items);
+    } catch (e) {
+      $('rec-grid').innerHTML = '';
+      showError(`recommend: ${e.message}`);
+    }
+  });
+
+  function renderRecs(items) {
+    $('rec-grid').innerHTML = items.map((it, idx) => `
+      <button data-item="${it.item_id}" data-idx="${it.item_idx}"
+              class="card text-left bg-white rounded-xl border border-slate-200 p-4 hover:border-indigo-400">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold text-slate-400">#${idx+1}</span>
+          <span class="pill bg-emerald-50 text-emerald-700">${it.score.toFixed(3)}</span>
+        </div>
+        <div class="font-mono text-sm truncate" title="${it.item_id}">
+          ${it.title ? `<span class="font-sans font-medium text-slate-800">${it.title}</span><br>` : ''}
+          <a href="https://www.amazon.com/dp/${it.item_id}" target="_blank" rel="noopener"
+             class="text-indigo-600 hover:underline" onclick="event.stopPropagation()"
+             title="open on Amazon">${it.item_id} ↗</a>
+        </div>
+        <div class="text-xs text-slate-400 mt-1">idx ${it.item_idx}</div>
+      </button>
+    `).join('');
+
+    $('rec-grid').querySelectorAll('[data-item]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        $('rec-grid').querySelectorAll('[data-item]').forEach(b => b.classList.remove('selected-card'));
+        btn.classList.add('selected-card');
+        selectedItem = btn.dataset.item;
+        loadDetail(currentUser, btn.dataset.item);
+      });
+    });
+  }
+
+  // ----- explain + counterfactual in parallel -----
+  async function loadDetail(userId, itemId) {
+    $('detail-section').classList.remove('hidden');
+    $('explain-body').innerHTML = `<div class="skel h-4 w-full rounded"></div>
+                                   <div class="skel h-4 w-3/4 rounded"></div>`;
+    $('explain-score').textContent = '…';
+    $('cf-body').innerHTML = `<div class="skel h-4 w-full rounded"></div>
+                              <div class="skel h-4 w-2/3 rounded"></div>`;
+    $('cf-flag').textContent = '…';
+    $('cf-flag').className = 'pill bg-slate-100 text-slate-600';
+
+    const body = JSON.stringify({ user_id: userId, item_id: itemId });
+    const cfBody = JSON.stringify({ user_id: userId, item_id: itemId, top_k: 10 });
+
+    const [exp, cf] = await Promise.allSettled([
+      api('/explain', { method:'POST', body }),
+      api('/counterfactual', { method:'POST', body: cfBody }),
+    ]);
+
+    if (exp.status === 'fulfilled') renderExplain(exp.value);
+    else $('explain-body').innerHTML = `<p class="text-rose-700 text-sm">${exp.reason.message}</p>`;
+
+    if (cf.status === 'fulfilled') renderCF(cf.value);
+    else $('cf-body').innerHTML = `<p class="text-rose-700 text-sm">${cf.reason.message}</p>`;
+  }
+
+  function renderExplain(d) {
+    $('explain-score').textContent = `score ${d.score.toFixed(3)}`;
+    const aspects = d.selected_aspects.map((a, i) => {
+      const w = d.aspect_weights[i] ?? 0;
+      const intensity = Math.min(1, Math.max(0.3, w));
+      return `<span class="pill" style="background: rgba(99,102,241,${intensity*0.25});
+                color: rgb(67,56,202)">${a}
+                <span class="ml-1 text-[10px] opacity-70">${w.toFixed(2)}</span></span>`;
+    }).join(' ');
+
+    $('explain-body').innerHTML = `
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-400 mb-2">selected aspects</div>
+        <div class="flex flex-wrap gap-2">${aspects}</div>
+      </div>
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-400 mb-2">generated explanation</div>
+        <p class="text-slate-700 leading-relaxed bg-slate-50 rounded-lg p-3 border border-slate-100">
+          ${escapeHtml(d.explanation)}
+        </p>
+      </div>
+    `;
+  }
+
+  function renderCF(d) {
+    const flipped = d.flipped_out_of_top_k;
+    $('cf-flag').textContent = flipped ? 'faithful · flipped out of top-K' : 'not flipped';
+    $('cf-flag').className = `pill ${flipped ? 'bg-emerald-100 text-emerald-800'
+                                              : 'bg-amber-100 text-amber-800'}`;
+
+    const stat = (label, v, fmt = (x)=>x.toFixed(3), tone='text-slate-800') => `
+      <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">${label}</div>
+        <div class="text-lg font-semibold ${tone}">${fmt(v)}</div>
+      </div>`;
+
+    $('cf-body').innerHTML = `
+      <div class="grid grid-cols-2 gap-2">
+        ${stat('factual score', d.factual_score)}
+        ${stat('cf score (aspects zeroed)', d.counterfactual_score)}
+        ${stat('Δ score', d.delta, x=>x.toFixed(3),
+               d.delta > 0 ? 'text-emerald-700' : 'text-rose-700')}
+        ${stat('sufficiency', d.sufficiency)}
+        ${stat('comprehensiveness', d.comprehensiveness)}
+        ${stat('rank: factual → cf', 0,
+               () => `${d.factual_rank} → ${d.counterfactual_rank}`)}
+      </div>
+      <p class="text-xs text-slate-500 leading-relaxed">
+        Sufficiency near 1 means the picked aspects alone reproduce the score.
+        Comprehensiveness &gt; 0 means removing them lowers the score.
+        A rank flip out of top-${d.top_k} confirms the explanation is causally
+        responsible for the recommendation — the core claim of the paper.
+      </p>
+    `;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+  }
+</script>
+</body>
+</html>

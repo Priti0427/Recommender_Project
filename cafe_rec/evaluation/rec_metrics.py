@@ -18,6 +18,21 @@ def _to_numpy(x: ArrayLike) -> np.ndarray:
     return np.asarray(x)
 
 
+def _prep_scores_for_ranking(x: ArrayLike) -> np.ndarray:
+    """Convert to float64, replace NaN/inf with -inf (so they sink to the bottom),
+    and add a tiny uniform jitter to break ties uniformly at random.
+
+    Without this, degenerate models (all-equal scores, NaN scores) get ranked
+    in candidate-index order -- and since the positive is always at index 0,
+    Recall@K would silently return 1.0 regardless of model quality.
+    """
+    s = _to_numpy(x).astype(np.float64, copy=True)
+    s[~np.isfinite(s)] = -np.inf
+    # Jitter magnitude is far below any real score difference.
+    s += np.random.uniform(-1e-9, 1e-9, size=s.shape)
+    return s
+
+
 # ---------------------------------------------------------------------------
 # 1. Recall@K
 # ---------------------------------------------------------------------------
@@ -39,8 +54,7 @@ def recall_at_k(
     Returns:
         1.0 or 0.0 (float).
     """
-    s = _to_numpy(scores)
-    # Rank candidates descending by score; `argsort(-s)` puts best first.
+    s = _prep_scores_for_ranking(scores)
     top_k = np.argsort(-s, kind="stable")[:k]
     return float(int(ground_truth_item) in set(int(x) for x in top_k))
 
@@ -63,7 +77,7 @@ def ndcg_at_k(
     `rank` is the 0-indexed position of the ground-truth item in the
     descending score order.
     """
-    s = _to_numpy(scores)
+    s = _prep_scores_for_ranking(scores)
     order = np.argsort(-s, kind="stable")
     rank_arr = np.where(order == int(ground_truth_item))[0]
     if rank_arr.size == 0:

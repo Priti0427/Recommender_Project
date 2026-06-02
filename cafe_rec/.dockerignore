@@ -1,0 +1,39 @@
+# Keep the Docker build context small and reproducible.
+# Large/regeneratable artifacts are mounted at runtime, not baked into the image.
+
+# Datasets (mounted as a volume at runtime)
+data/raw/
+data/processed/
+
+# Model checkpoints / weights (mounted as a volume at runtime)
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Python caches / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+.venv-*/
+venv/
+env/
+
+# Experiment tracking / logs
+wandb/
+runs/
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

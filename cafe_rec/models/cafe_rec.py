@@ -261,6 +261,10 @@ class CaFeRec(nn.Module):
                 max_length=int(max_length),
                 num_beams=int(num_beams),
                 early_stopping=True,
+                # Suppress degenerate loops ("a man who is a man who is ...")
+                # that greedy/low-beam decoding falls into on an undertrained LM.
+                repetition_penalty=1.3,
+                no_repeat_ngram_size=3,
             )
             text = self.tokenizer.decode(
                 out_ids[0], skip_special_tokens=True

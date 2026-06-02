@@ -75,7 +75,10 @@ def sufficiency_score(
     s_full = _score(model, user_emb, item_emb, selected)
     s_only = _score(model, user_emb, item_emb, selected * expl_mask)
 
-    suff = 1.0 - (s_full - s_only).abs() / (s_full.abs() + 1e-8)
+    # ConstrainedScorer ends in nn.Sigmoid(), so s_* are already in [0, 1].
+    # No extra squashing (a second sigmoid would compress [0,1] -> [0.5,0.73]
+    # and shrink the reported difference).
+    suff = 1.0 - (s_full - s_only).abs()
     return float(suff.mean().item())
 
 
@@ -121,6 +124,8 @@ def comprehensiveness_score(
 
     s_full = _score(model, user_emb, item_emb, selected)
     s_ablate = _score(model, user_emb, item_emb, selected * (1.0 - expl_mask))
+    # Scorer already outputs [0, 1] (nn.Sigmoid), so the raw difference is the
+    # honest comprehensiveness in [-1, 1]; no second sigmoid.
     return float((s_full - s_ablate).mean().item())
 
 

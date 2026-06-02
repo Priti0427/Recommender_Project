@@ -1,0 +1,7 @@
+{
+  "lambda_faith": 0.0,
+  "lambda_sparse": 0.0,
+  "warmup_epochs": 100,
+  "num_epochs": 100,
+  "save_dir": "./checkpoints/ablation_warmup_only"
+}

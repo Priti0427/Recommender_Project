@@ -53,6 +53,22 @@ def parse_args() -> argparse.Namespace:
                    help="Override config.processed_dir.")
     p.add_argument("--sample_size", type=int, default=0,
                    help="If > 0, randomly sample this many training rows.")
+    p.add_argument("--batch_size", type=int, default=0,
+                   help="Override config.batch_size (>0 to apply).")
+    p.add_argument("--max_length", type=int, default=0,
+                   help="Override config.max_explanation_length (>0 to apply).")
+    p.add_argument("--num_epochs", type=int, default=0,
+                   help="Override config.num_epochs (>0 to apply).")
+    p.add_argument("--num_workers", type=int, default=2,
+                   help="DataLoader worker processes (default 2).")
+    p.add_argument("--amp", action="store_true",
+                   help="Enable fp16 mixed precision (CUDA only). "
+                        "Big speedup on T4 but Flan-T5 can occasionally NaN.")
+    p.add_argument("--seed", type=int, default=0,
+                   help="Random seed for torch/numpy. Use distinct seeds "
+                        "across parallel runs to get true variance estimates.")
+    p.add_argument("--save_dir", default=None,
+                   help="Override config.save_dir (per-run checkpoint dir).")
     return p.parse_args()
 
 
@@ -65,6 +81,15 @@ def load_config(args: argparse.Namespace) -> Config:
         cfg = replace(cfg, **overrides)
     if args.processed_dir:
         cfg = replace(cfg, processed_dir=args.processed_dir)
+    if args.batch_size and args.batch_size > 0:
+        cfg = replace(cfg, batch_size=args.batch_size)
+    if args.max_length and args.max_length > 0:
+        cfg = replace(cfg, max_explanation_length=args.max_length)
+    if args.num_epochs and args.num_epochs > 0:
+        cfg = replace(cfg, num_epochs=args.num_epochs,
+                      warmup_epochs=min(cfg.warmup_epochs, args.num_epochs))
+    if args.save_dir:
+        cfg = replace(cfg, save_dir=args.save_dir)
     cfg = replace(cfg, dataset_name=args.dataset)
     return cfg
 
@@ -223,10 +248,16 @@ def train_one_epoch(
     config: Config,
     epoch: int,
     wb=None,
+    scaler: Optional["torch.cuda.amp.GradScaler"] = None,
+    amp_dtype: Optional[torch.dtype] = None,
 ) -> Dict[str, float]:
     model.train()
     device = torch.device(config.device)
     warmup = epoch < config.warmup_epochs
+    use_amp = amp_dtype is not None and device.type == "cuda"
+    # bf16 has fp32's dynamic range -> no GradScaler needed and no NaN on Flan-T5.
+    # fp16 needs GradScaler and is known to NaN on T5 attention softmax.
+    use_scaler = scaler is not None and use_amp and amp_dtype == torch.float16
 
     # Anneal Gumbel temperature once per epoch.
     tau = model.aspect_selector.anneal_temperature(epoch, config.num_epochs)
@@ -245,45 +276,53 @@ def train_one_epoch(
             user_ids.size(0), model.num_items, device
         )
 
-        out = model(
-            user_ids, pos_ids,
-            neg_item_ids=neg_ids,
-            explanation_ids=input_ids,
-            mode="train",
-        )
-
-        # --- L_rec: BPR over pos vs. neg.
-        L_rec = bpr_loss(out["rec_score"], out["neg_rec_score"])
-
-        # --- L_text: CE between T5 logits and reference (pad -> -100).
-        labels = input_ids.clone()
-        labels[labels == model.tokenizer.pad_token_id] = -100
-        L_text = text_loss(out["explanation_logits"], labels)
-
-        # --- After warmup, add fidelity + sparsity.
-        if warmup:
-            L_faith = torch.tensor(0.0, device=device)
-            L_sparse = torch.tensor(0.0, device=device)
-            drop_val = torch.tensor(0.0, device=device)
-        else:
-            L_faith, drop_val = counterfactual_fidelity_loss(
-                model.constrained_scorer,
-                out["user_emb"], out["pos_item_emb"],
-                out["selected_aspects"],
-                margin=config.fidelity_margin,
+        with torch.autocast(device_type="cuda",
+                            dtype=amp_dtype if use_amp else torch.float32,
+                            enabled=use_amp):
+            out = model(
+                user_ids, pos_ids,
+                neg_item_ids=neg_ids,
+                explanation_ids=input_ids,
+                mode="train",
             )
-            L_sparse = sparsity_loss(out["aspect_logits"])
 
-        total = (
-            config.lambda_rec * L_rec
-            + config.lambda_text * L_text
-            + config.lambda_faith * L_faith
-            + config.lambda_sparse * L_sparse
-        )
+            # --- L_rec: BPR over pos vs. neg.
+            L_rec = bpr_loss(out["rec_score"], out["neg_rec_score"])
+
+            # --- L_text: CE between T5 logits and reference (pad -> -100).
+            labels = input_ids.clone()
+            labels[labels == model.tokenizer.pad_token_id] = -100
+            L_text = text_loss(out["explanation_logits"], labels)
+
+            # --- After warmup, add fidelity + sparsity.
+            if warmup:
+                L_faith = torch.tensor(0.0, device=device)
+                L_sparse = torch.tensor(0.0, device=device)
+                drop_val = torch.tensor(0.0, device=device)
+            else:
+                L_faith, drop_val = counterfactual_fidelity_loss(
+                    model.constrained_scorer,
+                    out["user_emb"], out["pos_item_emb"],
+                    out["selected_aspects"],
+                    margin=config.fidelity_margin,
+                )
+                L_sparse = sparsity_loss(out["aspect_logits"])
+
+            total = (
+                config.lambda_rec * L_rec
+                + config.lambda_text * L_text
+                + config.lambda_faith * L_faith
+                + config.lambda_sparse * L_sparse
+            )
 
         optimizer.zero_grad(set_to_none=True)
-        total.backward()
-        optimizer.step()
+        if use_scaler:
+            scaler.scale(total).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            total.backward()
+            optimizer.step()
 
         sums["rec"] += float(L_rec.item())
         sums["text"] += float(L_text.item())
@@ -395,8 +434,11 @@ def main() -> None:
     print(f"[config] device={config.device} epochs={config.num_epochs} "
           f"batch={config.batch_size}")
 
-    torch.manual_seed(0)
-    np.random.seed(0)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+    print(f"[seed] using seed={args.seed}, save_dir={config.save_dir}")
 
     wb = setup_wandb(config, args.run_name, disabled=args.no_wandb)
 
@@ -423,16 +465,35 @@ def main() -> None:
         train_df, val_df, test_df, vocab, model.tokenizer, config, num_items
     )
 
+    pin = (config.device == "cuda")
     train_loader = DataLoader(
         train_ds, batch_size=config.batch_size, shuffle=True,
-        collate_fn=explanation_collate_fn, num_workers=2,
-        persistent_workers=True, drop_last=True,
+        collate_fn=explanation_collate_fn, num_workers=args.num_workers,
+        persistent_workers=(args.num_workers > 0), drop_last=True,
+        pin_memory=pin,
     )
 
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
+    )
+
+    # Pick AMP dtype: bf16 on capable GPUs (stable for Flan-T5), fp16 on T4.
+    amp_dtype: Optional[torch.dtype] = None
+    if args.amp and config.device == "cuda":
+        if torch.cuda.is_bf16_supported():
+            amp_dtype = torch.bfloat16
+            print("[amp] bf16 enabled (stable for Flan-T5, no GradScaler needed)")
+        else:
+            amp_dtype = torch.float16
+            print("[amp] fp16 enabled -- T4-class GPU has no bf16. "
+                  "Flan-T5 may NaN; if losses go nan, re-run without --amp.")
+    elif args.amp and config.device != "cuda":
+        print(f"[amp] requested but device is {config.device}; disabling")
+    scaler = (
+        torch.cuda.amp.GradScaler(enabled=True)
+        if amp_dtype == torch.float16 else None
     )
 
     # ---------- Graceful Ctrl-C ----------
@@ -451,33 +512,49 @@ def main() -> None:
     try:
         for epoch in range(config.num_epochs):
             avg = train_one_epoch(
-                model, train_loader, optimizer, config, epoch, wb=wb
+                model, train_loader, optimizer, config, epoch,
+                wb=wb, scaler=scaler, amp_dtype=amp_dtype,
             )
-            val_score = validate(model, val_ds, config)
-            _wandb_log(wb, {"val/Recall@10": val_score, "epoch": epoch})
+            val_recall = validate(model, val_ds, config)
+            fidelity_drop = float(avg.get("aspect/fidelity_drop", 0.0))
+            # Joint selection criterion: prefer models that are both accurate
+            # and faithful. Pure Recall@10 peaks at epoch 0 (before fidelity
+            # loss turns on) so it would lock in a non-faithful checkpoint.
+            joint_score = val_recall + 0.1 * fidelity_drop
+            post_warmup = epoch >= config.warmup_epochs
+            _wandb_log(wb, {
+                "val/Recall@10": val_recall,
+                "val/joint_score": joint_score,
+                "val/post_warmup": int(post_warmup),
+                "epoch": epoch,
+            })
 
             epoch_times.append(avg["time/epoch_sec"])
             remaining = (
                 (config.num_epochs - epoch - 1) * np.mean(epoch_times)
             )
+            warmup_tag = "" if post_warmup else "  (warmup, not selectable)"
             print(
                 f"[epoch {epoch:02d}] {_fmt_losses(avg)}  "
-                f"val_Recall@10={val_score:.4f}  "
+                f"val_Recall@10={val_recall:.4f}  "
+                f"joint={joint_score:.4f}{warmup_tag}  "
                 f"eta≈{remaining / 60:.1f} min"
             )
 
-            if val_score > best_val + 1e-6:
-                best_val = val_score
+            if post_warmup and joint_score > best_val + 1e-6:
+                best_val = joint_score
                 no_improve = 0
                 best_path = save_checkpoint(
-                    model, optimizer, epoch, val_score, config, tag="best"
+                    model, optimizer, epoch, joint_score, config, tag="best"
                 )
-            else:
+            elif post_warmup:
                 no_improve += 1
                 if no_improve >= config.patience:
                     print(f"[train] early stop at epoch {epoch} "
                           f"(no improvement in {config.patience} epochs)")
                     break
+            # For backward compat with the existing var name used later:
+            val_score = val_recall
 
             if interrupted["flag"]:
                 save_checkpoint(
