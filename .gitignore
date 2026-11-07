@@ -66,3 +66,21 @@ mlruns/
 .env
 .env.local
 *.pem
+
+# Report / writeup artifacts — keep source code only
+*.docx
+*.pdf
+*.pptx
+*.ppt
+*.zip
+
+# Report page images (duplicates of PDF content)
+pg-*.jpg
+pg-*.jpeg
+v2-*.jpg
+v2-*.jpeg
+
+# Old submission snapshots / backup directories
+CaFE_Rec_Project/
+CaFE_Rec_Project 2/
+.git.bak/

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CAFE_", env_file=".env", extra="ignore")
 
     checkpoint_path: str = Field(
-        default=str(REPO_ROOT / "checkpoints" / "cafe_rec_amazon_movies_best_e01_r0.0938.pt"),
+        default=str(REPO_ROOT / "checkpoints" / "cafe_rec_amazon_movies_best_e05_r0.4901.pt"),
         description="Path to a trained CaFE-Rec checkpoint (.pt).",
     )
     processed_dir: str = Field(

@@ -201,6 +201,35 @@ The improvement is statistically significant (Wilcoxon, *p* about 0, *n* = 3777)
 
 ![Figure 2: Explanation and counterfactual fidelity](report_assets/ui_explanation.png)
 
+### 4.7 Running the system
+
+The complete project, including the full code, the trained model checkpoint, and the processed data, is available in this Google Drive folder:
+
+https://drive.google.com/drive/folders/147uWwW2GkH4mhELv9r5lMBMybHgBcrmo
+
+Download the folder (or the `CaFE-Rec-Submission.zip` inside it) and unzip it. The bundle then runs with no extra configuration (the only network access needed is a one-time download of the Flan-T5 weights from HuggingFace on the first explanation). Requirements: Python 3.9 or newer (or Docker) and about 8 GB of RAM.
+
+**Option A, Python:**
+
+```
+cd cafe_rec
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt -r api/requirements.txt
+uvicorn api.main:app --app-dir . --port 8000
+```
+
+Then open `http://localhost:8000` for the demo UI, or `http://localhost:8000/docs` for the interactive API.
+
+**Option B, Docker:**
+
+```
+cd cafe_rec
+docker build -t cafe-rec -f api/Dockerfile .
+docker run -p 8000:8000 -v "$PWD/checkpoints:/app/checkpoints:ro" -v "$PWD/data/processed:/app/data/processed:ro" cafe-rec
+```
+
+The checkpoint and data paths are pre-configured, so no environment variables are required. To reproduce the reported offline metrics, run `python evaluate.py`, which uses the included validation and test splits.
+
 ---
 
 ## 5. Limitations

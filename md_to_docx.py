@@ -70,6 +70,24 @@ def main():
             i += 1
             continue
 
+        # Fenced code block ``` ... ```
+        if stripped.startswith("```"):
+            i += 1
+            code_lines = []
+            while i < n and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # skip closing fence
+            for cl in code_lines:
+                p = doc.add_paragraph()
+                p.paragraph_format.space_after = Pt(0)
+                p.paragraph_format.line_spacing = 1.0
+                p.paragraph_format.left_indent = Pt(12)
+                r = p.add_run(cl if cl.strip() else " ")
+                r.font.name = "Consolas"
+                r.font.size = Pt(10)
+            continue
+
         # Horizontal rule -> skip (acts as separator)
         if re.fullmatch(r"-{3,}", stripped):
             i += 1
