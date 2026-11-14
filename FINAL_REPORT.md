@@ -1,6 +1,6 @@
 # CaFE-Rec: Training Recommender Systems to Give Honest Explanations
 
-**DSCI 641, Recommender Systems, Spring 2026 · Final Project Report (Option 1: Offline Experiment)**
+**DSCI 641, Recommender Systems · Final Project Report**
 
 **Team:** Priti Sagar (pp693@drexel.edu) · Devdeepsinh Zala (dkz27@drexel.edu) · Sayali Chougule (sc4385@drexel.edu)
 
