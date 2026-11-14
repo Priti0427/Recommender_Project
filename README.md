@@ -1,6 +1,6 @@
 # CaFE-Rec: Counterfactually Faithful Explanation Recommender
 
-An explainable recommender system that produces natural-language explanations **causally tied** to the recommendation — not post-hoc rationalizations. Built for DSCI 641 (Drexel) and targeting RecSys 2026.
+An explainable recommender system that produces natural-language explanations **causally tied** to the recommendation, not post-hoc rationalizations.
 
 ## What's inside
 
