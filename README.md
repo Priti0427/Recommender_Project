@@ -11,7 +11,7 @@ An explainable recommender system that produces natural-language explanations **
 
 See [`cafe_rec/README.md`](cafe_rec/README.md) for setup, dataset download, training, evaluation and API instructions.
 
-## Quick start
+## How to start
 
 ```bash
 cd cafe_rec
