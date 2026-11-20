@@ -1,4 +1,4 @@
-# CaFE-Rec: Counterfactually Faithful Explanation Recommender
+# Counterfactually Faithful Explanation Recommender
 
 An explainable recommender system that produces natural-language explanations **causally tied** to the recommendation, not post-hoc rationalizations.
 
