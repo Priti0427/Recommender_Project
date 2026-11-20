@@ -21,7 +21,7 @@ pip install -r requirements.txt
 
 ## Model summary
 
-Four modules trained end-to-end:
+Four modules has been trained end-to-end:
 
 1. **LightGCN** — graph-aware user/item embeddings
 2. **AspectSelector** — 2-layer MLP + Gumbel-Softmax picks 3–5 aspects from a review-mined vocabulary
