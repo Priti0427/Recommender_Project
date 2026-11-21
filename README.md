@@ -28,4 +28,4 @@ Four modules has been trained end-to-end:
 3. **ConstrainedScorer** — MLP that scores recommendations using *only* the selected aspects
 4. **Flan-T5-Base adapter** — generates text from the same aspect bottleneck
 
-Jointly optimized over BPR ranking, text cross-entropy, counterfactual fidelity, and L1 sparsity.
+These models have been jointly optimized over BPR ranking, text cross-entropy, counterfactual fidelity, and L1 sparsity.
