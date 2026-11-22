@@ -46,7 +46,7 @@ If deployed, the ideal data would be **first-party interaction logs** from the p
 
 - Implicit signals: plays, completion rate, watch time, re-watches, skips.
 - Explicit ratings.
-- **User-written reviews or micro-feedback** (for example, "loved the soundtrack"). This is the critical feature: it is the only source that ties a *behavior* (the user watched X) to a *reason in the user's own words* (they cared about the soundtrack).
+- **User-written reviews or micro-feedback** (for example, "loved the soundtrack"). This is the critical feature as it is the only source that ties a *behavior* (the user watched X) to a *reason in the user's own words* (they cared about the soundtrack).
 - Item-side content (genre, cast, synopsis) and, with consent, contextual signals (time of day, device).
 
 We would obtain interaction and review data directly from product logs under the platform's terms of service, and content metadata from the catalog provider. This data is ideal because faithful explanation requires aligning *what was consumed* with *why*, which only paired behavior-plus-text provides.
@@ -58,7 +58,7 @@ For offline experimentation we use the **Amazon Reviews 2023** dataset, **Movies
 - **Why it fits:** each record contains exactly the behavior-plus-text pairing our application needs: a user, an item, a rating, **and a free-text review** we can treat as a proxy for an explanation and mine for aspects.
 - **Why it is a valid stand-in for the ideal data:** the reviews supply the "why" signal and the user-item graph supplies the relevance signal, on a public, reproducible corpus, before we can collect first-party logs.
 
-### 2.3 Transformations and filtering (each justified)
+### 2.3 Transformations and filtering
 - **5-core filtering** (drop users and items with fewer than 5 interactions): standard for collaborative filtering. With fewer than 5 interactions, graph embeddings cannot be estimated and evaluation is dominated by cold-start noise rather than algorithm quality. This is grounded in fitness-for-purpose, not convenience.
 - **Chronological train/val/test split (80/10/10):** we split by time, not randomly, because the real application predicts *future* views from *past* behavior. A random split would leak future interactions and overstate accuracy.
 - **Aspect mining:** from review text we mine a fixed vocabulary of the **50 most frequent aspect terms** (for example, *acting, plot, story, special effects, cast, scenes, music*) and label each review with the aspects it mentions. This produces the supervision signal for the explanation gate.
