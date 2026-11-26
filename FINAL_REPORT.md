@@ -1,4 +1,4 @@
-# CaFE-Rec: Training Recommender Systems to Give Honest Explanations
+# Training Recommender Systems to Give Honest Explanations
 
 **DSCI 641, Recommender Systems · Final Project Report**
 
@@ -133,7 +133,8 @@ A two-epoch warmup runs `L_rec + L_text` only, so the gate learns something befo
 ## 4. Experiments
 
 ### 4.1 Data preparation and protocol
-We use the chronological 80/10/10 split from §2.3. **Ranking is evaluated against 100 sampled negatives per positive** (standard sampled-ranking protocol), with the held-out positive scored against the negatives; this keeps evaluation tractable at our scale while preserving ranking semantics. The exact run steps:
+We use the chronological 80/10/10 split from §2.3. **Ranking is evaluated against 100 sampled negatives per positive** (standard sampled-ranking protocol), with the held-out positive scored against the negatives; this keeps evaluation tractable at our scale while preserving ranking semantics. 
+Run Steps:
 
 1. Build the LightGCN user-item graph from training interactions.
 2. For each test user, score the positive plus 100 negatives.
